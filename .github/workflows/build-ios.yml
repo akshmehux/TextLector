@@ -56,7 +56,29 @@ jobs:
           xcodebuild \
             -project iosApp.xcodeproj \
             -resolvePackageDependencies
+      - name: Build sherpa-onnx XCFramework
+        run: |
+          set -e
 
+          git clone --depth 1 --branch v1.12.34 \
+            https://github.com/k2-fsa/sherpa-onnx.git \
+            "$GITHUB_WORKSPACE/sherpa-onnx"
+
+          cd "$GITHUB_WORKSPACE/sherpa-onnx"
+
+          chmod +x build-ios.sh
+
+          ./build-ios.sh
+
+          mkdir -p "$GITHUB_WORKSPACE/iosApp/Frameworks"
+
+          cp -R \
+            build-ios/sherpa-onnx.xcframework \
+            "$GITHUB_WORKSPACE/iosApp/Frameworks/"
+
+          echo "Sherpa framework installed:"
+          find "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework" \
+            -maxdepth 2 -type f | head -30
       - name: Build iOS app
         run: |
           mkdir -p "$GITHUB_WORKSPACE/build"
