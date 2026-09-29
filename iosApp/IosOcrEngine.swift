@@ -40,7 +40,6 @@ import ComposeApp
             }
 
             request.recognitionLevel = .accurate
-            request.automaticallyDetectsLanguage = true
 
             let handler = VNImageRequestHandler(cgImage: cgImage)
             do {
