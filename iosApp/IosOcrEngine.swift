@@ -41,6 +41,10 @@ import ComposeApp
 
             request.recognitionLevel = .accurate
 
+if #available(iOS 16.0, *) {
+    request.automaticallyDetectsLanguage = true
+}
+
             let handler = VNImageRequestHandler(cgImage: cgImage)
             do {
                 try handler.perform([request])
