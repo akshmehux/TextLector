@@ -14,15 +14,19 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.SUPERTONIC_GITHUB_TOKEN }}
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout repository
-      # ------------------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Select Xcode
-      # ------------------------------------------------------------
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+
+      # ============================================================
+      # 2. Select Xcode 26.0.1
+      # ============================================================
+
       - name: Select Xcode 26.0.1
         run: |
           sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer
@@ -33,18 +37,22 @@ jobs:
           echo "=== Swift ==="
           swift --version
 
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 3. Java 21
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      # ------------------------------------------------------------
+
+      # ============================================================
       # 4. Prepare Gradle
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Prepare Gradle
         run: |
           chmod +x ./gradlew
@@ -54,20 +62,87 @@ jobs:
           KEY_PASSWORD=dummy
           EOF
 
-          sed -i.bak 's/networkTimeout=10000/networkTimeout=120000/' \
+          sed -i.bak \
+            's/networkTimeout=10000/networkTimeout=120000/' \
             gradle/wrapper/gradle-wrapper.properties
 
-      # ------------------------------------------------------------
-      # 5. Verify Gradle
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 5. Cheap preflight
+      #
+      # IMPORTANT:
+      # This happens BEFORE the 12-minute Sherpa compilation.
+      # If the Xcode project is broken, we fail here in seconds.
+      # ============================================================
+
+      - name: Preflight Xcode project
+        run: |
+          set -e
+
+          echo "=== Checking Xcode project ==="
+
+          xcodebuild \
+            -list \
+            -project iosApp/iosApp.xcodeproj
+
+          echo ""
+          echo "=== Checking iosApp target ==="
+
+          xcodebuild \
+            -showBuildSettings \
+            -project iosApp/iosApp.xcodeproj \
+            -target iosApp \
+            -configuration Release \
+            -sdk iphoneos \
+            > build-settings.txt
+
+          grep "PRODUCT_NAME" build-settings.txt || true
+          grep "IPHONEOS_DEPLOYMENT_TARGET" build-settings.txt || true
+
+          echo ""
+          echo "=== Checking for accidental developer paths ==="
+
+          if grep -R \
+            "/Users/denis/AndroidStudioProjects" \
+            iosApp/iosApp.xcodeproj/project.pbxproj; then
+
+            echo ""
+            echo "ERROR: Personal developer path is still present in project.pbxproj."
+            exit 1
+          fi
+
+          echo "✅ No hard-coded developer path found."
+
+
+      # ============================================================
+      # 6. Verify Gradle
+      # ============================================================
+
       - name: Verify Gradle
         run: |
           ./gradlew --version
 
-      # ------------------------------------------------------------
-      # 6. Build sherpa-onnx XCFramework
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 7. Restore cached Sherpa XCFramework
+      #
+      # This prevents future runs from rebuilding Sherpa for ~12 min.
+      # ============================================================
+
+      - name: Restore Sherpa XCFramework cache
+        id: sherpa-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ci-cache/sherpa-onnx.xcframework
+          key: sherpa-ios-1.12.34-xcode26-${{ runner.arch }}
+
+
+      # ============================================================
+      # 8. Build Sherpa only when cache is missing
+      # ============================================================
+
       - name: Build sherpa-onnx XCFramework
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
         run: |
           set -e
 
@@ -85,8 +160,6 @@ jobs:
 
           ./build-ios.sh
 
-          echo "=== Searching for sherpa-onnx.xcframework ==="
-
           SHERPA_XCFRAMEWORK="$(
             find "$GITHUB_WORKSPACE/sherpa-onnx" \
               -type d \
@@ -102,38 +175,85 @@ jobs:
           echo "Found:"
           echo "$SHERPA_XCFRAMEWORK"
 
+          mkdir -p \
+            "$GITHUB_WORKSPACE/.ci-cache"
+
+          rm -rf \
+            "$GITHUB_WORKSPACE/.ci-cache/sherpa-onnx.xcframework"
+
+          cp -R \
+            "$SHERPA_XCFRAMEWORK" \
+            "$GITHUB_WORKSPACE/.ci-cache/sherpa-onnx.xcframework"
+
+
+      # ============================================================
+      # 9. Save Sherpa cache
+      # ============================================================
+
+      - name: Save Sherpa XCFramework cache
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: .ci-cache/sherpa-onnx.xcframework
+          key: sherpa-ios-1.12.34-xcode26-${{ runner.arch }}
+
+
+      # ============================================================
+      # 10. Install Sherpa into TextLector
+      # ============================================================
+
+      - name: Install Sherpa XCFramework
+        run: |
+          set -e
+
           mkdir -p "$GITHUB_WORKSPACE/iosApp/Frameworks"
 
           rm -rf \
             "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
 
           cp -R \
-            "$SHERPA_XCFRAMEWORK" \
+            "$GITHUB_WORKSPACE/.ci-cache/sherpa-onnx.xcframework" \
             "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
 
-          echo "=== Installed frameworks ==="
-          ls -lah "$GITHUB_WORKSPACE/iosApp/Frameworks"
+          echo "=== Installed framework ==="
 
-      # ------------------------------------------------------------
-      # 7. Build iOS app
+          ls -lah \
+            "$GITHUB_WORKSPACE/iosApp/Frameworks"
+
+          test -d \
+            "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
+
+
+      # ============================================================
+      # 11. Build the actual iOS application
       #
       # IMPORTANT:
-      # - scheme iosApp fixes the -derivedDataPath error
-      # - iOS deployment target is 15.0
-      # - explicit Swift modules are disabled
-      # ------------------------------------------------------------
+      #
+      # We intentionally use:
+      #   -target iosApp
+      #   -sdk iphoneos
+      #
+      # We intentionally DO NOT use:
+      #   -scheme
+      #   -derivedDataPath
+      #
+      # This matches the invocation that previously got through
+      # Xcode's dependency graph and into compilation.
+      # ============================================================
+
       - name: Build iOS app
         run: |
           set -o pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/build"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/build/Release-iphoneos"
 
           xcodebuild \
             -project iosApp/iosApp.xcodeproj \
-            -scheme iosApp \
+            -target iosApp \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build/Release-iphoneos" \
             IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             CODE_SIGNING_ALLOWED=NO \
@@ -141,40 +261,34 @@ jobs:
             SWIFT_ENABLE_EXPLICIT_MODULES=NO \
             -skipPackagePluginValidation \
             build \
-            2>&1 | tee "$GITHUB_WORKSPACE/build/xcodebuild.log"
+            2>&1 | tee \
+            "$GITHUB_WORKSPACE/build/xcodebuild.log"
 
-      # ------------------------------------------------------------
-      # 8. Dump the full Xcode log if build fails
-      # ------------------------------------------------------------
-      - name: Show Xcode build log on failure
+
+      # ============================================================
+      # 12. Show useful log if build fails
+      # ============================================================
+
+      - name: Show Xcode errors on failure
         if: failure()
         run: |
           echo "============================================================"
-          echo "XCODE BUILD LOG"
+          echo "XCODE ERRORS"
           echo "============================================================"
 
           if [ -f "$GITHUB_WORKSPACE/build/xcodebuild.log" ]; then
-            cat "$GITHUB_WORKSPACE/build/xcodebuild.log"
-          else
-            echo "xcodebuild.log was not created."
+            grep -n -B 5 -A 15 \
+              -E "error:|fatal error:|FAILED|Execution failed" \
+              "$GITHUB_WORKSPACE/build/xcodebuild.log" \
+              || true
           fi
 
-      # ------------------------------------------------------------
-      # 9. Locate TextLector.app
-      # ------------------------------------------------------------
-      - name: Locate app
-        run: |
-          echo "=== Searching for TextLector.app ==="
 
-          find "$GITHUB_WORKSPACE/build" \
-            -type d \
-            -name "TextLector.app" \
-            -print
+      # ============================================================
+      # 13. Locate app
+      # ============================================================
 
-      # ------------------------------------------------------------
-      # 10. Verify app exists
-      # ------------------------------------------------------------
-      - name: Verify app
+      - name: Locate TextLector.app
         run: |
           APP_PATH="$(
             find "$GITHUB_WORKSPACE/build" \
@@ -188,78 +302,65 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Found app:"
+          echo "APP_PATH=$APP_PATH" \
+            >> "$GITHUB_ENV"
+
+          echo "✅ Found:"
           echo "$APP_PATH"
 
-          echo "=== App contents ==="
-          ls -lah "$APP_PATH"
 
-      # ------------------------------------------------------------
-      # 11. Verify minimum iOS target
-      # ------------------------------------------------------------
-      - name: Verify iOS deployment target
+      # ============================================================
+      # 14. Verify iOS minimum version
+      # ============================================================
+
+      - name: Verify iOS 15 target
         run: |
-          APP_PATH="$(
-            find "$GITHUB_WORKSPACE/build" \
-              -type d \
-              -name "TextLector.app" \
-              -print -quit
-          )"
+          echo "=== App binary ==="
 
-          echo "=== Checking binary ==="
+          otool -l \
+            "$APP_PATH/TextLector" \
+            | grep -A 5 LC_BUILD_VERSION \
+            || true
 
-          otool -l "$APP_PATH/TextLector" \
-            | grep -A5 LC_BUILD_VERSION || true
 
-      # ------------------------------------------------------------
-      # 12. Check Supertonic resources
-      # ------------------------------------------------------------
+      # ============================================================
+      # 15. Inspect Supertonic resources
+      #
+      # We don't fail the build here yet.
+      # First priority is producing a valid app.
+      # ============================================================
+
       - name: Check Supertonic resources
         run: |
-          APP_PATH="$(
-            find "$GITHUB_WORKSPACE/build" \
-              -type d \
-              -name "TextLector.app" \
-              -print -quit
-          )"
+          echo "=== Searching for Supertonic resources ==="
 
-          echo "=== Checking Supertonic resources ==="
+          find "$GITHUB_WORKSPACE/composeApp/build" \
+            -type d \
+            -path "*/SupertonicKMP.framework/supertonic" \
+            -print \
+            2>/dev/null \
+            | head -20 \
+            || true
 
           if [ -d "$APP_PATH/supertonic" ]; then
-            echo "✅ Supertonic resources found."
-
-            find "$APP_PATH/supertonic" \
-              -maxdepth 2 \
-              -type f \
-              | head -50
+            echo "✅ Supertonic resources are in the app bundle."
           else
-            echo "⚠️ Supertonic resources were NOT found."
-
-            echo "Continuing so we can inspect the build."
+            echo "⚠️ Supertonic resources are not currently in the app bundle."
           fi
 
-      # ------------------------------------------------------------
-      # 13. Package unsigned IPA
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 16. Create unsigned IPA
+      # ============================================================
+
       - name: Package IPA
         run: |
           set -e
 
-          APP_PATH="$(
-            find "$GITHUB_WORKSPACE/build" \
-              -type d \
-              -name "TextLector.app" \
-              -print -quit
-          )"
-
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: TextLector.app was not produced."
-            exit 1
-          fi
-
           rm -rf "$GITHUB_WORKSPACE/ipa"
 
-          mkdir -p "$GITHUB_WORKSPACE/ipa/Payload"
+          mkdir -p \
+            "$GITHUB_WORKSPACE/ipa/Payload"
 
           cp -R \
             "$APP_PATH" \
@@ -275,16 +376,18 @@ jobs:
           echo "✅ IPA CREATED"
           echo "============================================================"
 
-          ls -lh TextLector-iOS15.ipa
+          ls -lh \
+            TextLector-iOS15.ipa
 
-      # ------------------------------------------------------------
-      # 14. Upload IPA
-      # ------------------------------------------------------------
+
+      # ============================================================
+      # 17. Upload IPA
+      # ============================================================
+
       - name: Upload IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: TextLector-iOS15-IPA
           path: ipa/TextLector-iOS15.ipa
           if-no-files-found: error
           retention-days: 7
-          
