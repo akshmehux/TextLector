@@ -201,7 +201,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "RESOURCES_SRC="$SRCROOT/../core/build/bin/iosArm64/debugFramework/SupertonicKMP.framework/supertonic"\nAPP_PATH=\"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n\nif [ -d \"$RESOURCES_SRC\" ] && [ -d \"$APP_PATH\" ]; then\n    cp -R \"$RESOURCES_SRC\" \"$APP_PATH/\"\n    echo \"Copied supertonic voice styles!\"\nelse\n    echo \"Skipped: $RESOURCES_SRC not found\"\nfi\n";
+			shellScript = "RESOURCES_SRC=\"/Users/denis/AndroidStudioProjects/supertonickmp/core/build/bin/iosArm64/debugFramework/SupertonicKMP.framework/supertonic\"\nAPP_PATH=\"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n\nif [ -d \"$RESOURCES_SRC\" ] && [ -d \"$APP_PATH\" ]; then\n    cp -R \"$RESOURCES_SRC\" \"$APP_PATH/\"\n    echo \"Copied supertonic voice styles!\"\nelse\n    echo \"Skipped: $RESOURCES_SRC not found\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
