@@ -11,29 +11,26 @@ jobs:
     runs-on: macos-26
 
     env:
-      # Token used by TextLector's Gradle configuration to download
-      # supertonic-kmp from GitHub Packages.
       GITHUB_TOKEN: ${{ secrets.SUPERTONIC_GITHUB_TOKEN }}
 
     steps:
       # ------------------------------------------------------------
-      # 1. Checkout TextLector
+      # 1. Checkout repository
       # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ------------------------------------------------------------
-      # 2. Select Xcode 26
-      # Kotlin 2.3.0 is documented as compatible with Xcode 26.0.
+      # 2. Select Xcode
       # ------------------------------------------------------------
       - name: Select Xcode 26.0.1
         run: |
           sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer
 
-          echo "Xcode:"
+          echo "=== Xcode ==="
           xcodebuild -version
 
-          echo "Swift:"
+          echo "=== Swift ==="
           swift --version
 
       # ------------------------------------------------------------
@@ -52,18 +49,16 @@ jobs:
         run: |
           chmod +x ./gradlew
 
-          # TextLector expects local.properties during Gradle configuration.
           cat > local.properties <<'EOF'
           KEYSTORE_PASSWORD=dummy
           KEY_PASSWORD=dummy
           EOF
 
-          # Increase Gradle wrapper download timeout.
           sed -i.bak 's/networkTimeout=10000/networkTimeout=120000/' \
             gradle/wrapper/gradle-wrapper.properties
 
       # ------------------------------------------------------------
-      # 5. Check Gradle
+      # 5. Verify Gradle
       # ------------------------------------------------------------
       - name: Verify Gradle
         run: |
@@ -71,12 +66,6 @@ jobs:
 
       # ------------------------------------------------------------
       # 6. Build sherpa-onnx XCFramework
-      #
-      # TextLector's Xcode project expects:
-      # iosApp/Frameworks/sherpa-onnx.xcframework
-      #
-      # The framework is generated on the runner rather than committed
-      # to the repository.
       # ------------------------------------------------------------
       - name: Build sherpa-onnx XCFramework
         run: |
@@ -96,11 +85,7 @@ jobs:
 
           ./build-ios.sh
 
-          echo "Looking for generated sherpa-onnx XCFramework..."
-          find "$GITHUB_WORKSPACE/sherpa-onnx" \
-            -type d \
-            -name "sherpa-onnx.xcframework" \
-            -print
+          echo "=== Searching for sherpa-onnx.xcframework ==="
 
           SHERPA_XCFRAMEWORK="$(
             find "$GITHUB_WORKSPACE/sherpa-onnx" \
@@ -114,6 +99,9 @@ jobs:
             exit 1
           fi
 
+          echo "Found:"
+          echo "$SHERPA_XCFRAMEWORK"
+
           mkdir -p "$GITHUB_WORKSPACE/iosApp/Frameworks"
 
           rm -rf \
@@ -123,14 +111,16 @@ jobs:
             "$SHERPA_XCFRAMEWORK" \
             "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
 
-          echo "Installed Sherpa framework:"
-          ls -la "$GITHUB_WORKSPACE/iosApp/Frameworks"
-          
+          echo "=== Installed frameworks ==="
+          ls -lah "$GITHUB_WORKSPACE/iosApp/Frameworks"
+
       # ------------------------------------------------------------
       # 7. Build iOS app
       #
-      # SWIFT_ENABLE_EXPLICIT_MODULES=NO is the important fix for the
-      # Xcode 26 + ONNX Runtime generated-module-map failure we just hit.
+      # IMPORTANT:
+      # - scheme iosApp fixes the -derivedDataPath error
+      # - iOS deployment target is 15.0
+      # - explicit Swift modules are disabled
       # ------------------------------------------------------------
       - name: Build iOS app
         run: |
@@ -140,7 +130,7 @@ jobs:
 
           xcodebuild \
             -project iosApp/iosApp.xcodeproj \
-            -target iosApp \
+            -scheme iosApp \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
@@ -154,7 +144,7 @@ jobs:
             2>&1 | tee "$GITHUB_WORKSPACE/build/xcodebuild.log"
 
       # ------------------------------------------------------------
-      # 8. Dump complete Xcode log if the build fails
+      # 8. Dump the full Xcode log if build fails
       # ------------------------------------------------------------
       - name: Show Xcode build log on failure
         if: failure()
@@ -170,11 +160,11 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # 9. Find the resulting .app
+      # 9. Locate TextLector.app
       # ------------------------------------------------------------
       - name: Locate app
         run: |
-          echo "Searching for TextLector.app..."
+          echo "=== Searching for TextLector.app ==="
 
           find "$GITHUB_WORKSPACE/build" \
             -type d \
@@ -182,7 +172,7 @@ jobs:
             -print
 
       # ------------------------------------------------------------
-      # 10. Verify the app exists
+      # 10. Verify app exists
       # ------------------------------------------------------------
       - name: Verify app
         run: |
@@ -198,14 +188,14 @@ jobs:
             exit 1
           fi
 
-          echo "Found app:"
+          echo "✅ Found app:"
           echo "$APP_PATH"
 
-          echo "App contents:"
-          ls -la "$APP_PATH"
+          echo "=== App contents ==="
+          ls -lah "$APP_PATH"
 
       # ------------------------------------------------------------
-      # 11. Check the resulting binary's minimum iOS version
+      # 11. Verify minimum iOS target
       # ------------------------------------------------------------
       - name: Verify iOS deployment target
         run: |
@@ -216,14 +206,13 @@ jobs:
               -print -quit
           )"
 
-          echo "Checking:"
-          echo "$APP_PATH/TextLector"
+          echo "=== Checking binary ==="
 
           otool -l "$APP_PATH/TextLector" \
             | grep -A5 LC_BUILD_VERSION || true
 
       # ------------------------------------------------------------
-      # 12. Check whether Supertonic resources were bundled
+      # 12. Check Supertonic resources
       # ------------------------------------------------------------
       - name: Check Supertonic resources
         run: |
@@ -234,7 +223,7 @@ jobs:
               -print -quit
           )"
 
-          echo "Checking for Supertonic resources..."
+          echo "=== Checking Supertonic resources ==="
 
           if [ -d "$APP_PATH/supertonic" ]; then
             echo "✅ Supertonic resources found."
@@ -245,11 +234,12 @@ jobs:
               | head -50
           else
             echo "⚠️ Supertonic resources were NOT found."
-            echo "Continuing for now so we can inspect the completed build."
+
+            echo "Continuing so we can inspect the build."
           fi
 
       # ------------------------------------------------------------
-      # 13. Create TrollStore-compatible unsigned IPA
+      # 13. Package unsigned IPA
       # ------------------------------------------------------------
       - name: Package IPA
         run: |
@@ -281,14 +271,14 @@ jobs:
             TextLector-iOS15.ipa \
             Payload
 
-          echo "=========================================="
-          echo "IPA CREATED"
-          echo "=========================================="
+          echo "============================================================"
+          echo "✅ IPA CREATED"
+          echo "============================================================"
 
           ls -lh TextLector-iOS15.ipa
 
       # ------------------------------------------------------------
-      # 14. Upload IPA to GitHub Actions
+      # 14. Upload IPA
       # ------------------------------------------------------------
       - name: Upload IPA
         uses: actions/upload-artifact@v4
@@ -297,3 +287,4 @@ jobs:
           path: ipa/TextLector-iOS15.ipa
           if-no-files-found: error
           retention-days: 7
+          
