@@ -199,7 +199,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "RESOURCES_SRC=\"/Users/denis/AndroidStudioProjects/supertonickmp/core/build/bin/iosArm64/debugFramework/SupertonicKMP.framework/supertonic\"\nAPP_PATH=\"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n\nif [ -d \"$RESOURCES_SRC\" ] && [ -d \"$APP_PATH\" ]; then\n    cp -R \"$RESOURCES_SRC\" \"$APP_PATH/\"\n    echo \"Copied supertonic voice styles!\"\nelse\n    echo \"Skipped: $RESOURCES_SRC not found\"\nfi\n";
+			shellScript = "APP_PATH=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}\"\nROOT_DIR=\"${SRCROOT}/..\"\n\nRESOURCES_SRC=\"\"\n\nfor SEARCH_ROOT in \\\n    \"${ROOT_DIR}/composeApp/build\" \\\n    \"${ROOT_DIR}/.gradle/caches/modules-2/files-2.1/io.github.nedmah/supertonic-kmp/0.1.0\" \\\n    \"${HOME}/.gradle/caches/modules-2/files-2.1/io.github.nedmah/supertonic-kmp/0.1.0\"; do\n    if [ -d \"${SEARCH_ROOT}\" ]; then\n        FOUND=\"$(find \"${SEARCH_ROOT}\" -type d -path '*/SupertonicKMP.framework/supertonic' -print -quit 2>/dev/null)\"\n        if [ -n \"${FOUND}\" ]; then\n            RESOURCES_SRC=\"${FOUND}\"\n            break\n        fi\n    fi\ndone\n\nif [ -n \"${RESOURCES_SRC}\" ] && [ -d \"${APP_PATH}\" ]; then\n    cp -R \"${RESOURCES_SRC}\" \"${APP_PATH}/\"\n    echo \"Copied Supertonic voice styles from: ${RESOURCES_SRC}\"\nelse\n    echo \"Supertonic voice styles not found; continuing build\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
