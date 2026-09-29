@@ -11,56 +11,82 @@ jobs:
     runs-on: macos-26
 
     env:
+      # Token used by TextLector's Gradle configuration to download
+      # supertonic-kmp from GitHub Packages.
       GITHUB_TOKEN: ${{ secrets.SUPERTONIC_GITHUB_TOKEN }}
 
     steps:
+      # ------------------------------------------------------------
+      # 1. Checkout TextLector
+      # ------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # 2. Select Xcode 26
+      # Kotlin 2.3.0 is documented as compatible with Xcode 26.0.
+      # ------------------------------------------------------------
       - name: Select Xcode 26.0.1
         run: |
           sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer
+
+          echo "Xcode:"
           xcodebuild -version
+
+          echo "Swift:"
           swift --version
 
+      # ------------------------------------------------------------
+      # 3. Java 21
+      # ------------------------------------------------------------
       - name: Set up Java 21
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Prepare Gradle environment
+      # ------------------------------------------------------------
+      # 4. Prepare Gradle
+      # ------------------------------------------------------------
+      - name: Prepare Gradle
         run: |
           chmod +x ./gradlew
 
-          # TextLector requires local.properties during Gradle configuration.
-          # The file is intentionally gitignored.
+          # TextLector expects local.properties during Gradle configuration.
           cat > local.properties <<'EOF'
           KEYSTORE_PASSWORD=dummy
           KEY_PASSWORD=dummy
           EOF
 
-          # The repo currently uses only a 10-second Gradle wrapper timeout.
-          # GitHub-hosted runners normally have fast networking, but this
-          # makes the build less fragile.
+          # Increase Gradle wrapper download timeout.
           sed -i.bak 's/networkTimeout=10000/networkTimeout=120000/' \
             gradle/wrapper/gradle-wrapper.properties
 
+      # ------------------------------------------------------------
+      # 5. Check Gradle
+      # ------------------------------------------------------------
       - name: Verify Gradle
         run: |
           ./gradlew --version
 
-      - name: Resolve Swift packages
-        working-directory: iosApp
-        run: |
-          xcodebuild \
-            -project iosApp.xcodeproj \
-            -resolvePackageDependencies
+      # ------------------------------------------------------------
+      # 6. Build sherpa-onnx XCFramework
+      #
+      # TextLector's Xcode project expects:
+      # iosApp/Frameworks/sherpa-onnx.xcframework
+      #
+      # The framework is generated on the runner rather than committed
+      # to the repository.
+      # ------------------------------------------------------------
       - name: Build sherpa-onnx XCFramework
         run: |
           set -e
 
-          git clone --depth 1 --branch v1.12.34 \
+          rm -rf "$GITHUB_WORKSPACE/sherpa-onnx"
+
+          git clone \
+            --depth 1 \
+            --branch v1.12.34 \
             https://github.com/k2-fsa/sherpa-onnx.git \
             "$GITHUB_WORKSPACE/sherpa-onnx"
 
@@ -70,17 +96,46 @@ jobs:
 
           ./build-ios.sh
 
+          echo "Looking for generated sherpa-onnx XCFramework..."
+          find "$GITHUB_WORKSPACE/sherpa-onnx" \
+            -type d \
+            -name "sherpa-onnx.xcframework" \
+            -print
+
+          SHERPA_XCFRAMEWORK="$(
+            find "$GITHUB_WORKSPACE/sherpa-onnx" \
+              -type d \
+              -name "sherpa-onnx.xcframework" \
+              -print -quit
+          )"
+
+          if [ -z "$SHERPA_XCFRAMEWORK" ]; then
+            echo "ERROR: sherpa-onnx.xcframework was not created."
+            exit 1
+          fi
+
           mkdir -p "$GITHUB_WORKSPACE/iosApp/Frameworks"
 
-          cp -R \
-            build-ios/sherpa-onnx.xcframework \
-            "$GITHUB_WORKSPACE/iosApp/Frameworks/"
+          rm -rf \
+            "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
 
-          echo "Sherpa framework installed:"
-          find "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework" \
-            -maxdepth 2 -type f | head -30
+          cp -R \
+            "$SHERPA_XCFRAMEWORK" \
+            "$GITHUB_WORKSPACE/iosApp/Frameworks/sherpa-onnx.xcframework"
+
+          echo "Installed Sherpa framework:"
+          ls -la "$GITHUB_WORKSPACE/iosApp/Frameworks"
+          
+      # ------------------------------------------------------------
+      # 7. Build iOS app
+      #
+      # SWIFT_ENABLE_EXPLICIT_MODULES=NO is the important fix for the
+      # Xcode 26 + ONNX Runtime generated-module-map failure we just hit.
+      # ------------------------------------------------------------
       - name: Build iOS app
         run: |
+          set -o pipefail
+
           mkdir -p "$GITHUB_WORKSPACE/build"
 
           xcodebuild \
@@ -88,68 +143,155 @@ jobs:
             -target iosApp \
             -configuration Release \
             -sdk iphoneos \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build/Release-iphoneos" \
             IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            -skipPackagePluginValidation \
+            build \
+            2>&1 | tee "$GITHUB_WORKSPACE/build/xcodebuild.log"
 
+      # ------------------------------------------------------------
+      # 8. Dump complete Xcode log if the build fails
+      # ------------------------------------------------------------
+      - name: Show Xcode build log on failure
+        if: failure()
+        run: |
+          echo "============================================================"
+          echo "XCODE BUILD LOG"
+          echo "============================================================"
+
+          if [ -f "$GITHUB_WORKSPACE/build/xcodebuild.log" ]; then
+            cat "$GITHUB_WORKSPACE/build/xcodebuild.log"
+          else
+            echo "xcodebuild.log was not created."
+          fi
+
+      # ------------------------------------------------------------
+      # 9. Find the resulting .app
+      # ------------------------------------------------------------
       - name: Locate app
         run: |
           echo "Searching for TextLector.app..."
+
           find "$GITHUB_WORKSPACE/build" \
             -type d \
             -name "TextLector.app" \
             -print
 
+      # ------------------------------------------------------------
+      # 10. Verify the app exists
+      # ------------------------------------------------------------
+      - name: Verify app
+        run: |
+          APP_PATH="$(
+            find "$GITHUB_WORKSPACE/build" \
+              -type d \
+              -name "TextLector.app" \
+              -print -quit
+          )"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: TextLector.app was not produced."
+            exit 1
+          fi
+
+          echo "Found app:"
+          echo "$APP_PATH"
+
+          echo "App contents:"
+          ls -la "$APP_PATH"
+
+      # ------------------------------------------------------------
+      # 11. Check the resulting binary's minimum iOS version
+      # ------------------------------------------------------------
       - name: Verify iOS deployment target
         run: |
-          APP_PATH="$(find "$GITHUB_WORKSPACE/build" -type d -name "TextLector.app" -print -quit)"
+          APP_PATH="$(
+            find "$GITHUB_WORKSPACE/build" \
+              -type d \
+              -name "TextLector.app" \
+              -print -quit
+          )"
 
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: TextLector.app was not produced."
-            exit 1
-          fi
-
-          echo "APP_PATH=$APP_PATH"
+          echo "Checking:"
+          echo "$APP_PATH/TextLector"
 
           otool -l "$APP_PATH/TextLector" \
-            | grep -A3 LC_BUILD_VERSION || true
+            | grep -A5 LC_BUILD_VERSION || true
 
-      - name: Package unsigned IPA
+      # ------------------------------------------------------------
+      # 12. Check whether Supertonic resources were bundled
+      # ------------------------------------------------------------
+      - name: Check Supertonic resources
         run: |
-          APP_PATH="$(find "$GITHUB_WORKSPACE/build" -type d -name "TextLector.app" -print -quit)"
+          APP_PATH="$(
+            find "$GITHUB_WORKSPACE/build" \
+              -type d \
+              -name "TextLector.app" \
+              -print -quit
+          )"
+
+          echo "Checking for Supertonic resources..."
+
+          if [ -d "$APP_PATH/supertonic" ]; then
+            echo "✅ Supertonic resources found."
+
+            find "$APP_PATH/supertonic" \
+              -maxdepth 2 \
+              -type f \
+              | head -50
+          else
+            echo "⚠️ Supertonic resources were NOT found."
+            echo "Continuing for now so we can inspect the completed build."
+          fi
+
+      # ------------------------------------------------------------
+      # 13. Create TrollStore-compatible unsigned IPA
+      # ------------------------------------------------------------
+      - name: Package IPA
+        run: |
+          set -e
+
+          APP_PATH="$(
+            find "$GITHUB_WORKSPACE/build" \
+              -type d \
+              -name "TextLector.app" \
+              -print -quit
+          )"
 
           if [ -z "$APP_PATH" ]; then
             echo "ERROR: TextLector.app was not produced."
             exit 1
           fi
 
+          rm -rf "$GITHUB_WORKSPACE/ipa"
+
           mkdir -p "$GITHUB_WORKSPACE/ipa/Payload"
-          cp -R "$APP_PATH" "$GITHUB_WORKSPACE/ipa/Payload/TextLector.app"
+
+          cp -R \
+            "$APP_PATH" \
+            "$GITHUB_WORKSPACE/ipa/Payload/TextLector.app"
 
           cd "$GITHUB_WORKSPACE/ipa"
-          zip -qry TextLector-iOS15.ipa Payload
 
-          echo "Created:"
+          zip -qry \
+            TextLector-iOS15.ipa \
+            Payload
+
+          echo "=========================================="
+          echo "IPA CREATED"
+          echo "=========================================="
+
           ls -lh TextLector-iOS15.ipa
 
-      - name: Check Supertonic resources
-        run: |
-          APP_PATH="$GITHUB_WORKSPACE/ipa/Payload/TextLector.app"
-
-          echo "Looking for bundled Supertonic resources..."
-
-          if [ -d "$APP_PATH/supertonic" ]; then
-            echo "Supertonic resources FOUND:"
-            find "$APP_PATH/supertonic" -maxdepth 2 -type f | head -50
-          else
-            echo "WARNING: Supertonic resources were NOT found in the app bundle."
-            echo "The IPA will still be uploaded so we can inspect the build."
-          fi
-
+      # ------------------------------------------------------------
+      # 14. Upload IPA to GitHub Actions
+      # ------------------------------------------------------------
       - name: Upload IPA
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: TextLector-iOS15-IPA
           path: ipa/TextLector-iOS15.ipa
