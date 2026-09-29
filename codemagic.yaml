@@ -1,0 +1,17 @@
+workflows:
+  ios-workflow:
+    name: TextLector iOS Workflow
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Build iOS App
+        script: |
+          # If your project uses CocoaPods, uncomment the line below:
+          # pod install
+          
+          # Add your build commands here, for example:
+          xcodebuild -scheme "TextLector" -sdk iphoneos -configuration Release build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+    artifacts:
+      - build/ios/ipa/*.ipa
